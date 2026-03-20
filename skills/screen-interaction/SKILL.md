@@ -478,6 +478,76 @@ def mc_cmd(cmd, max_retries=3):
 
 10. **Chaining xte commands with `usleep` is LESS reliable than separate calls** — despite seeming more atomic, `usleep` timing inside a single xte invocation is inconsistent.
 
+11. **Caps Lock gets stuck ON** — `xte` key presses can leave Caps Lock toggled. Always check `xset -q | grep Caps` and toggle off with `xdotool key Caps_Lock` before sending commands. Uppercase commands like `/SETBLOCK` will fail.
+
+---
+
+## Building in Minecraft: Method Comparison
+
+> Benchmarked on MC 1.21.11, creative mode, 48 identical blocks (4x3x4 solid cube).
+
+### End-to-End Timing
+
+| Method | Time | ms/block | Commands | Use Case |
+|--------|------|----------|----------|----------|
+| `/fill` (bulk) | **3.3s** | 70 | 1 | Best for walls, floors, bulk operations |
+| `/setblock` (per-block) | 160.2s | 3,338 | 48 | Precise single blocks, complex shapes |
+| `/tp` + right-click (mimic) | 183.4s | 3,821 | 96 | Human-like placement, no commands |
+
+### Speedups
+
+- `/fill` is **48x faster** than `/setblock` and **55x faster** than tp+click
+- `/setblock` is **1.1x faster** than tp+click (similar per-block cost)
+- All methods achieved **100% block placement accuracy**
+
+### Human-Mimic Method (tp + right-click)
+
+This method places blocks the way a human would — teleport to a position, look at a surface, right-click to place. No `/fill` or `/setblock` needed for the actual blocks.
+
+**How it works:**
+1. `/tp @s X.5 Y+1.6 Z.5 0 90` — stand above target, look straight down (pitch=90)
+2. `xte 'mouseclick 3'` — right-click places block on surface below crosshair
+3. Number keys (`xte 'key 1'`) — select hotbar slot for material
+
+**Recipe:**
+```python
+def place_block_at(x, y, z):
+    """Place held block at (x,y,z) by standing above, looking down."""
+    mc_cmd(f"tp @s {x}.5 {y+1.6} {z}.5 0 90")
+    time.sleep(0.3)
+    run(f"xdotool windowactivate --sync {GAME_WID}")
+    time.sleep(0.1)
+    run("xte 'mouseclick 3'")
+    time.sleep(0.12)
+```
+
+**Practical results (8x6x8 house, 176 mouse-placed blocks):**
+- Foundation (64 blocks via /setblock): 213.7s
+- Walls (112 blocks via tp+click): 439.4s (3,923 ms/block)
+- Ceiling (64 blocks via tp+click): 249.1s
+- Total house build: **989s (~16.5 min)**
+
+**When to use each method:**
+
+| Method | Speed | Human-Like | Precision | Best For |
+|--------|-------|-----------|-----------|----------|
+| `/fill` | Fastest (70 ms/blk) | No | Rectangles only | Walls, floors, clearing |
+| `/setblock` | Slow (3.3s/blk) | No | Any single block | Complex shapes, details |
+| tp + click | Slow (3.9s/blk) | **Yes** | Any block with surface | Demos, human simulation |
+| **Hybrid** | Mixed | Partial | Best of both | **Recommended** |
+
+**Hybrid approach (recommended):** Use `/fill` for large surfaces (walls, floors), `/setblock` for details (windows, lights), and tp+click only when you need to demonstrate human-like interaction.
+
+### Key Discoveries
+
+1. **Right-click (`xte 'mouseclick 3'`) works in LWJGL** — confirmed with 67.5% screen change on first test, then 176 blocks placed successfully.
+
+2. **Camera control via `/tp` yaw/pitch** — since `xdotool mousemove_relative` doesn't rotate the LWJGL camera (only 1-2% screen change), use `/tp` with yaw/pitch arguments for precise aiming.
+
+3. **Relative mouse movement does NOT work for LWJGL camera** — tested xdotool, xte `mousermove`, and python-xlib XTest relative motion. All produced <2% screen change. LWJGL reads raw input directly, not X11 motion events.
+
+4. **Seed blocks needed** — the mimic method requires an existing surface to click on. Place a foundation layer via `/setblock` first, then build up by clicking on existing blocks.
+
 ---
 
 ## Diagnostic Commands
@@ -497,4 +567,7 @@ DISPLAY=:1 xprop -id <WINDOW_ID> WM_CLASS
 
 # Check if XTest extension is available
 DISPLAY=:1 xdpyinfo | grep -i test
+
+# Check Caps Lock state (common gotcha)
+DISPLAY=:1 xset -q | grep Caps
 ```
