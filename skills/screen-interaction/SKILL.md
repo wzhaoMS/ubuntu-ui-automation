@@ -40,42 +40,59 @@ pip3 install --break-system-packages \
   python-xlib       # XTest protocol fallback for input events
 ```
 
+```bash
+# Additional Python packages (optional, fast but more deps)
+pip3 install --break-system-packages \
+  pyautogui      \  # Fast mouse/key (needs python3-tk)
+  pynput            # XTest-based input, scriptable
+sudo apt-get install -y python3-tk  # Required by pyautogui
+```
+
 ### Tool NOT available / broken
 
 | Tool | Status | Notes |
 |------|--------|-------|
 | `ydotool` | **Broken** on most Ubuntu setups | Requires ydotoold daemon + uinput access, usually fails with permission errors |
-| `pyautogui` | **Unreliable** | Requires tkinter (`python3-tk`), breaks on Xlib display connection |
+| `dotool` | **Not in apt** | Not packaged for Ubuntu |
 | `gnome-screenshot` | Not installed by default | `scrot` is lighter and faster |
 
 ---
 
 ## Tier List: What Works
 
-### Tier 1: Always Use These
+> **Updated with data from benchmark.py** — 10 trials × 4 tests × 5 tools.
+> LWJGL tested against Minecraft 1.21.11 with screenshot-diff verification.
 
-| Tool | Purpose | Why |
-|------|---------|-----|
-| `wmctrl` | List + activate windows | Reliable. Works by title substring. |
-| `scrot` | Screenshots | Fast (~0.7s for 5K screen). No deps. |
-| `xte` | Mouse + keyboard input | Uses XTest extension. Works with LWJGL/Java/OpenGL apps where xdotool fails. |
-| `xprop` | Read window properties | Get window titles, classes, IDs. |
-| `xwininfo` | Window geometry | Exact position, size, depth. |
-| Pillow (Python) | Screenshot analysis | Crop, pixel sampling, color detection. |
+### Tier 1: Recommended
 
-### Tier 2: Useful but Limited
+| Tool | Purpose | Speed | Notes |
+|------|---------|-------|-------|
+| `xte` | Mouse + keyboard input | 1.2ms click, 1.1ms key | XTest extension. Best balance of speed + simplicity. No deps beyond apt. |
+| `wmctrl` | List + activate windows | — | Reliable. Works by title substring. |
+| `scrot` | Screenshots | ~0.7s full screen | Fast, no deps. |
+| `xprop` / `xwininfo` | Window properties + geometry | — | Essential for coordinate calculation. |
+| Pillow (Python) | Screenshot analysis | — | Crop, pixel sampling, color detection. |
 
-| Tool | Purpose | Limitation |
-|------|---------|------------|
-| `xdotool` | Window activation, key/click | **Does NOT work with LWJGL/Java/OpenGL apps** for mouse clicks. Good for window management only. |
-| `python-xlib` XTest | Programmatic XTest events | More verbose than `xte`, but scriptable. |
+### Tier 1.5: Fast Alternatives
+
+| Tool | Purpose | Speed | Notes |
+|------|---------|-------|-------|
+| `pyautogui` | Mouse + keyboard (Python) | **0.5ms click, 0.2ms key** (fastest) | Requires `python3-tk`. Uses Xlib internally. FAILSAFE must be disabled. |
+| `pynput` | Mouse + keyboard (Python) | 1.3ms click, 1.2ms key | XTest-based. Clean API. Minimal deps. |
+
+### Tier 2: Usable but Slower
+
+| Tool | Purpose | Speed | Notes |
+|------|---------|-------|-------|
+| `xdotool` | Window management + input | **102ms click**, 13.6ms key (slowest) | Good for `windowactivate --sync`. Slow clicks due to subprocess + 100ms internal delay. |
+| `python-xlib` XTest | Programmatic XTest events | 21.6ms click, 11.3ms key | More verbose than `xte`, but fully scriptable. Display open/close overhead. |
 
 ### Tier 3: Avoid
 
 | Tool | Why |
 |------|-----|
-| `ydotool` | Permission issues, daemon requirement |
-| `pyautogui` | Fragile display connection, tkinter dependency |
+| `ydotool` | Permission issues, daemon requirement, not working on Ubuntu |
+| `dotool` | Not in Ubuntu apt repos |
 
 ---
 
@@ -98,7 +115,17 @@ Output:
 
 ```bash
 DISPLAY=:1 wmctrl -a "Firefox"           # Partial match on title
-DISPLAY=:1 wmctrl -a "Minecraft"         # Works for MC
+```
+
+**Warning:** `wmctrl -a` matches the FIRST window containing the string. If multiple windows match (e.g., "Minecraft Launcher" and "Minecraft 1.21.11 - Singleplayer"), use the window ID instead:
+
+```bash
+# Find the specific window ID
+GAME_WID=$(DISPLAY=:1 wmctrl -l | grep "Singleplayer" | awk '{print $1}')
+DISPLAY=:1 wmctrl -i -a "$GAME_WID"     # -i = by ID
+
+# Or use xdotool windowactivate for guaranteed focus:
+DISPLAY=:1 xdotool windowactivate --sync "$GAME_WID"
 ```
 
 ### 3. Get window geometry
@@ -262,11 +289,24 @@ d.close()
 
 ## Key Gotchas
 
-### xdotool clicks don't work on Java/LWJGL/OpenGL apps
+### LWJGL/Java/OpenGL apps: all XTest tools work, but focus matters
 
-xdotool sends X11 `SendEvent` which many apps (especially Java with LWJGL, OpenGL games, Electron with hardware acceleration) **ignore**. These apps read input directly from the X server's input extension.
+All 5 tested tools (xdotool, xte, pyautogui, pynput, python-xlib) successfully sent keyboard input to Minecraft 1.21.11 (LWJGL), producing identical 24.2% pixel change in ESC-toggle tests.
 
-**Solution:** Use `xte` (from `xautomation`) or `python-xlib` with XTest. These inject events at the X server level via the XTest extension, which ALL apps see as real hardware input.
+The critical requirement is **proper window focus**:
+```bash
+# CORRECT: use windowactivate --sync first, then send input
+DISPLAY=:1 xdotool windowactivate --sync <WINDOW_ID>
+sleep 0.5
+DISPLAY=:1 xte 'key Escape'
+
+# WRONG: wmctrl -a may match the wrong window (e.g., launcher instead of game)
+DISPLAY=:1 wmctrl -a "Minecraft"  # May focus Minecraft Launcher, not the game!
+```
+
+**Key insight:** Earlier assumptions that xdotool's `SendEvent` mechanism fails with LWJGL were caused by focus problems, not tool limitations. When the window is properly focused with `xdotool windowactivate --sync`, all tools work equally.
+
+**For mouse clicks on LWJGL apps**, prefer XTest-based tools (xte, pynput, python-xlib) as xdotool's `SendEvent` for mouse clicks may be less reliable than for keyboard events.
 
 ### DISPLAY must be correct
 
@@ -298,6 +338,43 @@ Don't rely on the window title to detect Minecraft state. Instead:
 ### Screenshots on high-DPI / multi-monitor
 
 `scrot` captures the full X root, which may be large (e.g., 5120x2160). Use Pillow to crop to the window area before analysis.
+
+---
+
+## Benchmark Results
+
+> Run `benchmark.py` in this directory to reproduce. Tested on Ubuntu 22.04, X11, 1920x1080.
+
+### Speed (avg ms, 10 trials per test)
+
+| Tool | mouse_move | mouse_click | key_press | Notes |
+|------|-----------|-------------|-----------|-------|
+| xdotool | 51.3 | **102.0** | 13.6 | Slowest clicks (subprocess + internal 100ms delay) |
+| xte | 51.2 | 1.2 | 1.1 | Consistent, fast |
+| pyautogui | 53.4 | **0.5** | **0.2** | Fastest (native Python, no subprocess) |
+| pynput | 52.0 | 1.3 | 1.2 | Similar to xte |
+| python-xlib | 51.1 | 21.6 | 11.3 | Display open/close overhead per call |
+
+All tools achieved **100% success rate** on mouse_move, mouse_click, and key_press tests.
+
+### LWJGL/Java Compatibility (Minecraft 1.21.11)
+
+| Tool | ESC Toggle | Pixel Change | Method |
+|------|-----------|-------------|--------|
+| xdotool | ✓ | 24.2% | XSendEvent (keyboard) |
+| xte | ✓ | 24.2% | XTest extension |
+| pyautogui | ✓ | 24.2% | Xlib keyboard |
+| pynput | ✓ | 24.2% | XTest extension |
+| python-xlib | ✓ | 24.2% | XTest extension |
+
+All tools reached LWJGL when the window was properly focused via `xdotool windowactivate --sync`.
+
+### Recommendation
+
+- **Default choice:** `xte` — fast, reliable, zero Python deps, works everywhere
+- **Python scripting:** `pynput` — clean API, XTest-based, minimal deps
+- **Max speed:** `pyautogui` — fastest clicks/keys, but requires `python3-tk`
+- **Window management:** `xdotool` — best for `windowactivate --sync`, but avoid for high-frequency clicks
 
 ---
 
