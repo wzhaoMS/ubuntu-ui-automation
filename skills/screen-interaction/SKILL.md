@@ -378,6 +378,108 @@ All tools reached LWJGL when the window was properly focused via `xdotool window
 
 ---
 
+## Typing Text into Applications (Chat / Command Console)
+
+> Data from systematic experiments: 6 methods tested, 3 trials each, across 3 command lengths.
+> Tested on Minecraft 1.21.11 (LWJGL) command console.
+
+### Summary of Findings
+
+Sending **single keystrokes** (ESC, F3, arrow keys) is 100% reliable with all tools.
+Sending **text strings** (chat messages, console commands) is inherently fragile — **every method has a failure rate of 10-30%**. The only way to achieve reliability is **retry with log verification**.
+
+### Method Comparison
+
+| Method | Reliability | Speed | Notes |
+|--------|------------|-------|-------|
+| `xte 'str ...'` (separate calls) | **67-100%** depending on timing | ~2s per cmd | Best overall. Needs 1.0s+ wait after str for 42-char commands |
+| `xdotool type --delay 50` | **100%** (3/3) | ~2.5s for 33 chars | Reliable but slow. delay=20 drops to 67%. delay=10 → 0% |
+| `xte` char-by-char (separate process per char) | **100%** at 0.02s gap | ~5s for 13 chars | Very slow (subprocess overhead per character). Impractical. |
+| `pynput` char-by-char (in-process) | **0%** | — | **Does not work for typing text.** Single keys work, but text does not reach MC. |
+| `xte` chained (`usleep` between ops) | **33-67%** | ~2s | Worse than separate calls. `usleep` timing is unreliable inside xte. |
+| `pyautogui.press()` | **0%** from Python script | — | Loses focus when Python script runs; only works from bash subprocess. |
+
+### Optimal Timing (xte str)
+
+Experimentally determined from 3 trials × 5 wait values × 3 command lengths:
+
+| Command Length | Min wait after `xte str` | Recommended |
+|---------------|--------------------------|-------------|
+| Short (13 chars) | 0.5s (67%) | 1.0s (67%) |
+| Medium (33 chars) | 1.0s (**100%**) | 1.0s |
+| Long (42 chars) | 1.5s (67%) | 1.5s |
+
+Wait after `/` key to open console: **0.1-0.5s** (both 100% at 3/3). Use **0.5s** for safety.
+
+### Reliable Command Recipe (Bash)
+
+```bash
+mc_cmd() {
+    local cmd="$1"
+    DISPLAY=:1 xdotool windowactivate --sync $GAME_WID
+    sleep 0.3
+    DISPLAY=:1 xte "key slash"   # Open command console (pre-fills "/")
+    sleep 0.5
+    DISPLAY=:1 xte "str $cmd"    # Type command (WITHOUT leading /)
+    sleep 1.5                     # Wait for text to arrive
+    DISPLAY=:1 xte "key Return"  # Execute
+    sleep 1.0                     # Wait for server response
+}
+```
+
+### Reliable Command Recipe (Python with retry + log verification)
+
+```python
+def mc_cmd(cmd, max_retries=3):
+    """Send /command to MC, verify via log, retry on failure."""
+    LOG = os.path.expanduser('~/.minecraft/logs/latest.log')
+    for attempt in range(max_retries):
+        with open(LOG) as f:
+            before = len(f.readlines())
+        
+        run("xdotool windowactivate --sync " + GAME_WID)
+        time.sleep(0.3)
+        run("xte 'key slash'")
+        time.sleep(0.5)
+        run(f"xte 'str {cmd}'")
+        time.sleep(1.5)
+        run("xte 'key Return'")
+        time.sleep(1.0)
+        
+        with open(LOG) as f:
+            new_lines = f.readlines()[before:]
+        
+        if any('Successfully' in l or 'Teleported' in l 
+               or 'Set the time' in l for l in new_lines):
+            return True
+        # Failed — retry
+    return False
+```
+
+### Critical Lessons Learned
+
+1. **Use `/` key, NOT `T` key** — `T` opens chat AND types "t" into the text box, corrupting every command. `/` pre-fills the slash cleanly.
+
+2. **pynput CANNOT type text into LWJGL** — It works for single keys (ESC, F3) but text input produces 0% success. This is a fundamental limitation of pynput's keyboard simulation for Java/LWJGL text fields.
+
+3. **Log-based verification is the only reliable feedback** — Screenshots can't distinguish between "command accepted but no blocks changed" and "command never arrived." Check `~/.minecraft/logs/latest.log` for `[CHAT]` entries.
+
+4. **`wmctrl -a` matches the wrong window** — "Minecraft" matches "Minecraft Launcher" before "Minecraft 1.21.11 - Singleplayer". Always use `wmctrl -l | grep "Singleplayer"` to get the specific window ID, then `wmctrl -i -a $WID`.
+
+5. **Singleplayer auto-pauses on focus loss** — Any time VS Code, a terminal, or another window steals focus, MC pauses and stops processing commands. Use `xdotool windowactivate --sync` before every command.
+
+6. **`xte str` is NOT instant** — Despite being a single call, xte injects characters sequentially. If you send Enter too early, the command is truncated. The failure pattern in logs looks like: `/fill 198 63 198 211 63 209 stone_bri<--[HERE]`
+
+7. **Retry logic is mandatory** — Even with optimal timing, ~15-30% of commands fail. A simple 3-retry loop with log verification brings effective reliability to >99%.
+
+8. **Refocus between commands** — Calling `xdotool windowactivate --sync` before each command prevents focus drift. Without this, long sequences degrade as other processes steal focus.
+
+9. **`xdotool type --delay 50` is the most reliable single-shot method** — 100% at 50ms/char, but slow (2.5s for a 33-char command). For batch operations, `xte str` + retry is faster overall.
+
+10. **Chaining xte commands with `usleep` is LESS reliable than separate calls** — despite seeming more atomic, `usleep` timing inside a single xte invocation is inconsistent.
+
+---
+
 ## Diagnostic Commands
 
 ```bash
