@@ -557,36 +557,46 @@ def place_block_at(x, y, z):
 
     **The ONLY working solution** requires kernel-level access:
     ```python
-    # Needs root or 'input' group membership
+    # Needs: sudo chmod 666 /dev/uinput (one-time)
+    # Also: pip3 install evdev
     from evdev import UInput, ecodes as e
     cap = {e.EV_REL: [e.REL_X, e.REL_Y], e.EV_KEY: [e.BTN_LEFT]}
     ui = UInput(cap, name='virtual-mouse')
-    ui.write(e.EV_REL, e.REL_X, 200)  # Move right 200 units
+    ui.write(e.EV_REL, e.REL_X, 200)  # Turn camera right
     ui.syn()
     ```
-    This requires `/dev/uinput` write access (`chmod 666 /dev/uinput` or adding user to `input` group).
+    **Tested: 23% screen change — CONFIRMED WORKING!**
+    
+    Also requires `F3+P` in-game to disable "Pause on lost focus", otherwise the game pauses every time our terminal runs a command.
 
 4. **Seed blocks needed** — the mimic method requires an existing surface to click on. Place a foundation layer via `/setblock` first, then build up by clicking on existing blocks.
 
 ---
 
-## Human-Like Continuous Movement (Walk + Turn + Place)
+## Human-Like Continuous Movement (Walk + Look + Place)
 
-> The most realistic building method — the player walks to each block, looks at the target, and right-clicks. No teleporting to each block.
+> **Fully human-like building** — walk with WASD, look with virtual mouse, click to place. No commands needed after initial setup.
+
+### Prerequisites
+
+```bash
+# One-time setup (needs sudo)
+sudo chmod 666 /dev/uinput
+pip3 install --break-system-packages evdev
+
+# In-game: Press F3+P to disable "Pause on lost focus"
+```
 
 ### How It Works
 
-Three primitives combine for natural movement:
+Four primitives at two different levels:
 
-| Action | Method | Speed |
-|--------|--------|-------|
-| **Walk** | `xte 'keydown w'` / `xte 'keyup w'` | 4.3 blocks/sec (sprint: 5.6) |
-| **Strafe** | `xte 'keydown a'` or `xte 'keydown d'` | 4.3 blocks/sec |
-| **Turn head** | `/tp @s ~ ~ ~ <yaw> <pitch>` | Instant, 0.000 position drift |
-| **Place block** | `xte 'mouseclick 3'` | ~80ms |
-| **Select slot** | `xte 'key 1'` through `xte 'key 9'` | Instant |
-
-**Key insight:** `/tp @s ~ ~ ~ yaw pitch` changes look direction WITHOUT moving position (all `~` for coords). This is like turning your head in place.
+| Action | Method | Level | Speed |
+|--------|--------|-------|-------|
+| **Walk** | `xte 'keydown w'` / `xte 'keyup w'` | X11 XTest | 4.3 blocks/sec |
+| **Look/Turn** | `ui.write(EV_REL, REL_X, N); ui.syn()` | **Kernel uinput** | Instant |
+| **Place block** | `xte 'mouseclick 3'` | X11 XTest | ~80ms |
+| **Select slot** | `xte 'key 1'` through `xte 'key 9'` | X11 XTest | Instant |
 
 ### Walk-Turn-Place Cycle
 
