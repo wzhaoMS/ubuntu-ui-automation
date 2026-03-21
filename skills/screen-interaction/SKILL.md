@@ -542,9 +542,29 @@ def place_block_at(x, y, z):
 
 1. **Right-click (`xte 'mouseclick 3'`) works in LWJGL** — confirmed with 67.5% screen change on first test, then 176 blocks placed successfully.
 
-2. **Camera control via `/tp` yaw/pitch** — since `xdotool mousemove_relative` doesn't rotate the LWJGL camera (only 1-2% screen change), use `/tp` with yaw/pitch arguments for precise aiming.
+2. **Camera control via `/tp` yaw/pitch** — since synthetic mouse movement doesn't rotate the LWJGL camera, use `/tp` with yaw/pitch arguments for precise aiming. This is a command, not pure mouse — see limitation #3.
 
-3. **Relative mouse movement does NOT work for LWJGL camera** — tested xdotool, xte `mousermove`, and python-xlib XTest relative motion. All produced <2% screen change. LWJGL reads raw input directly, not X11 motion events.
+3. **LWJGL camera ignores ALL synthetic mouse input** — the root cause is `rawMouseInput:true` in `~/.minecraft/options.txt`. GLFW reads XInput2 `XI_RawMotion` events from the kernel (`/dev/input/event*`), which can only come from real hardware or a virtual `uinput` device. All X11-level tools are filtered out:
+
+    | Method | Result | Why |
+    |--------|--------|-----|
+    | `xte 'mousermove 500 0'` | 0% camera change | Core X11 event, GLFW ignores |
+    | `xdotool mousemove_relative` | 0% | Core X11, SendEvent variant |
+    | python-xlib `XTest MotionNotify` | 0% | XTest extension, still X11 |
+    | `root.warp_pointer()` (XWarpPointer) | 0% | X11 warp, GLFW recenters |
+    | ESC → warp → ESC | 0% | GLFW doesn't read X11 cursor delta |
+    | Set `rawMouseInput:false` | 0% | GLFW still uses its own cursor grab loop |
+
+    **The ONLY working solution** requires kernel-level access:
+    ```python
+    # Needs root or 'input' group membership
+    from evdev import UInput, ecodes as e
+    cap = {e.EV_REL: [e.REL_X, e.REL_Y], e.EV_KEY: [e.BTN_LEFT]}
+    ui = UInput(cap, name='virtual-mouse')
+    ui.write(e.EV_REL, e.REL_X, 200)  # Move right 200 units
+    ui.syn()
+    ```
+    This requires `/dev/uinput` write access (`chmod 666 /dev/uinput` or adding user to `input` group).
 
 4. **Seed blocks needed** — the mimic method requires an existing surface to click on. Place a foundation layer via `/setblock` first, then build up by clicking on existing blocks.
 
