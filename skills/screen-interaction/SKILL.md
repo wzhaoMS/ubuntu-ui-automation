@@ -778,7 +778,39 @@ const bot = mineflayer.createBot({
 
 **Limitation:** Only works on a dedicated server. On LAN worlds, the server is the host's client — when the host disconnects, the server dies. The puppet bot gets `ECONNREFUSED`.
 
-**Dedicated server attempt (1.21.11):** Server hangs after "Loaded 1584 advancements" and never starts. This is a known issue with vanilla 1.21.x servers on some systems. Use Paper/Spigot for a workaround.
+**Dedicated server setup (Paper 1.21.11 — CONFIRMED WORKING):**
+
+```bash
+# Download Paper 1.21.11
+mkdir mc-server && cd mc-server
+python3 -c "
+import urllib.request
+urllib.request.urlretrieve(
+  'https://api.papermc.io/v2/projects/paper/versions/1.21.11/builds/69/downloads/paper-1.21.11-69.jar',
+  'paper.jar')
+print('Downloaded')
+"
+
+# Configure
+echo 'eula=true' > eula.txt
+cat > server.properties << EOF
+online-mode=false
+gamemode=creative
+server-port=25566
+spawn-protection=0
+allow-flight=true
+EOF
+
+# Copy world from singleplayer saves
+cp -r ~/.minecraft/saves/'Georgia Tech' ./world
+rm -f world/session.lock  # CRITICAL: remove stale lock
+
+# Start server — MUST use < /dev/null (server blocks on stdin when backgrounded!)
+java -Xmx2G -Xms1G -jar paper.jar nogui < /dev/null > server.log 2>&1 &
+# Starts in ~5s. Vanilla server.jar hangs forever — use Paper only.
+```
+
+**Tested:** 48/48 blocks placed as "alphasuperduper", verified by separate bot.
 
 ### Desktop Hybrid: Why It Fails
 
