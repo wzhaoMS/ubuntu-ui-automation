@@ -680,3 +680,197 @@ DISPLAY=:1 xdpyinfo | grep -i test
 # Check Caps Lock state (common gotcha)
 DISPLAY=:1 xset -q | grep Caps
 ```
+
+---
+
+## Mineflayer Protocol Bot (Recommended for MC Automation)
+
+> **This is the most reliable method for Minecraft automation.** Instead of fighting
+> LWJGL's input pipeline, talk the Minecraft network protocol directly.
+
+### What is Mineflayer?
+
+[mineflayer](https://github.com/PrismarineJS/mineflayer) is a Node.js library that implements the Minecraft protocol. It connects to a server as a separate player and sends the same network packets a real client would: position, look, block placement.
+
+### Setup
+
+```bash
+mkdir mc-builder && cd mc-builder
+npm init -y && npm install mineflayer mineflayer-pathfinder
+```
+
+### How it connects
+
+The bot joins a LAN world (or dedicated server) as a second player. The host must:
+1. Open to LAN: Esc → Open to LAN → Start LAN World (note the port)
+2. `/op BotName` in chat so the bot can use commands
+
+### Architecture: Three Approaches
+
+| Approach | How | Controls YOUR char? | Reliability |
+|----------|-----|---------------------|-------------|
+| **BuilderBot** (recommended) | Bot joins as separate player, walks + places | No — separate player | **100%** (48/48 blocks) |
+| **Puppet** | Bot joins with YOUR username (you disconnect first) | Yes — IS your character | Fails on LAN (server dies when host leaves) |
+| **Desktop Hybrid** | Bot reads world + xte/uinput sends mouse/keys | Yes — your window | **0%** (pause-on-focus-loss blocks all input) |
+
+### BuilderBot Example (build-well.js)
+
+```javascript
+const mineflayer = require('mineflayer');
+const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
+const { GoalNear } = goals;
+
+const bot = mineflayer.createBot({
+  host: 'localhost', port: PORT,
+  username: 'BuilderBot', auth: 'offline', version: '1.21.11'
+});
+bot.loadPlugin(pathfinder);
+
+bot.on('spawn', async () => {
+  const mcData = require('minecraft-data')(bot.version);
+  const movements = new Movements(bot, mcData);
+  movements.allowFreeMotion = true; // creative flight
+  bot.pathfinder.setMovements(movements);
+
+  // Wait for creative mode (host must /op BuilderBot first)
+  bot.chat('/gamemode creative');
+
+  // Get blocks via creative inventory (no /give command)
+  const PrismarineItem = require('prismarine-item')(bot.version);
+  const stoneBricks = mcData.itemsByName['stone_bricks'];
+  await bot.creative.setInventorySlot(36,
+    new PrismarineItem(stoneBricks.id, 64));
+  await bot.equip(bot.inventory.items().find(i => i.name === 'stone_bricks'), 'hand');
+
+  // Walk to host player
+  const host = Object.values(bot.players).find(p => p.username !== bot.username && p.entity);
+  await bot.pathfinder.goto(new GoalNear(host.entity.position.x, host.entity.position.y, host.entity.position.z, 3));
+
+  // Place blocks: walk → look → right-click
+  const target = vec3(x, y, z);
+  const refBlock = bot.blockAt(target.offset(0, -1, 0)); // ground below
+  const faceVec = target.minus(refBlock.position);
+  await bot.lookAt(refBlock.position.offset(0.5, 0.5, 0.5));
+  await bot.placeBlock(refBlock, faceVec);
+});
+```
+
+### Key Findings
+
+1. **100% reliable block placement** — tested 48/48 blocks placed, verified by separate bot
+2. **No focus/pause issues** — protocol bots don't need the game window
+3. **Bot teleports to player** — use `/tp BotName PlayerName` to reach far-away players (entity not loaded if >128 blocks apart)
+4. **Version must match exactly** — `version: '1.21.11'` not `'1.21.1'`
+5. **Walking is real** — `pathfinder.goto()` makes the bot walk through the world, calculating A* paths, just like a player would
+6. **Blocks via creative inventory** — `bot.creative.setInventorySlot()` puts items in inventory without `/give`
+
+### Puppet Approach (controlling YOUR character)
+
+Connect with the player's own username to take over their character:
+
+```javascript
+const bot = mineflayer.createBot({
+  host: 'localhost', port: PORT,
+  username: 'alphasuperduper',  // YOUR MC username
+  auth: 'offline', version: '1.21.11'
+});
+```
+
+**Limitation:** Only works on a dedicated server. On LAN worlds, the server is the host's client — when the host disconnects, the server dies. The puppet bot gets `ECONNREFUSED`.
+
+**Dedicated server attempt (1.21.11):** Server hangs after "Loaded 1584 advancements" and never starts. This is a known issue with vanilla 1.21.x servers on some systems. Use Paper/Spigot for a workaround.
+
+### Desktop Hybrid: Why It Fails
+
+The idea: mineflayer bot reads world state (coordinates, blocks), then xte/uinput controls YOUR game window.
+
+**Fatal flaw: `pauseOnLostFocus:true`**
+
+When the bot connects (a new network connection), MC's integrated server triggers a focus event. With `pauseOnLostFocus:true`, the game pauses and ignores ALL input (mouse, keyboard). Even with `pauseOnLostFocus:false` in options.txt, MC only reads this at startup — mid-session changes require restart.
+
+**Additional blocks:**
+- `rawMouseInput:true` → GLFW reads raw XI2 events, ignoring X11 mouse. Uinput works but needs complex low-level fd management.
+- `rawMouseInput:false` → GLFW still grabs the pointer. `xdotool mousemove_relative` does NOT work (0% camera movement verified).
+- Re-focusing the window with Escape+Click can close the pause menu, but any subsequent bot operation re-triggers the pause.
+
+**Verdict:** Desktop hybrid is fundamentally broken for LAN worlds. Use BuilderBot approach instead.
+
+### uinput Low-Level API (when python-evdev fails)
+
+When `python-evdev` UInput fails with `PermissionError` on `/dev/input/eventN` (readback), use raw ioctls:
+
+```python
+import os, struct, fcntl, time
+
+fd = os.open('/dev/uinput', os.O_WRONLY | os.O_NONBLOCK)
+
+# Setup device capabilities
+fcntl.ioctl(fd, 0x40045564, 0x02)  # UI_SET_EVBIT, EV_REL
+fcntl.ioctl(fd, 0x40045566, 0x00)  # UI_SET_RELBIT, REL_X
+fcntl.ioctl(fd, 0x40045566, 0x01)  # UI_SET_RELBIT, REL_Y
+
+# UI_DEV_SETUP (new API)
+ids = struct.pack('<HHHH', 0x03, 0x1234, 0x5678, 1)  # BUS_USB
+name = b'mc-mouse\0' + b'\0' * 71  # 80 bytes
+ff = struct.pack('<Q', 0)
+fcntl.ioctl(fd, 0x405c5503, ids + name + ff)
+
+# Create device
+fcntl.ioctl(fd, 0x5501)  # UI_DEV_CREATE
+time.sleep(0.3)
+
+# Send relative mouse movement
+tv = struct.pack('QQ', 0, 0)  # timeval
+for i in range(100):
+    os.write(fd, tv + struct.pack('<HHi', 0x02, 0x00, 10))  # EV_REL, REL_X, +10
+    os.write(fd, tv + struct.pack('<HHi', 0x00, 0, 0))      # EV_SYN
+    time.sleep(0.005)
+
+# Cleanup
+fcntl.ioctl(fd, 0x5502)  # UI_DEV_DESTROY
+os.close(fd)
+```
+
+**Permissions needed:**
+```bash
+sudo chmod a+rw /dev/uinput
+sudo chmod a+r /dev/input/event*
+# Or permanently: sudo usermod -aG input $USER (requires re-login)
+```
+
+### Mouse Sensitivity Math (for uinput camera control)
+
+```
+# From ~/.minecraft/options.txt:
+# mouseSensitivity:0.5  → f = 0.5 * 0.6 + 0.2 = 0.5
+# actualSens = f³ × 8 = 1.0
+# deltaYaw (degrees) = deltaMouseX × actualSens × 0.15
+# So: pixels needed = targetDegrees / 0.15
+```
+
+---
+
+## Session Checklist (Before Any MC Automation)
+
+```bash
+# 1. Is MC running and in-game?
+DISPLAY=:1 scrot /tmp/check.png  # Visual check
+
+# 2. Is it paused?
+# Gray overlay in center = paused. Click into game to unpause.
+
+# 3. What's the MC window ID?
+DISPLAY=:1 wmctrl -l | grep "Singleplayer"
+
+# 4. Is LAN open?
+grep "Local game hosted" ~/.minecraft/logs/latest.log | tail -1
+
+# 5. What are the MC settings?
+grep "pauseOnLostFocus\|rawMouseInput\|mouseSensitivity" ~/.minecraft/options.txt
+
+# 6. Is uinput accessible?
+ls -la /dev/uinput  # Should be crw-rw-rw-
+
+# 7. Is Caps Lock off?
+DISPLAY=:1 xset -q | grep Caps
+```
